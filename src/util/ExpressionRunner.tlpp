@@ -1,0 +1,66 @@
+#Include "TOTVS.CH"
+
+Namespace custom.superparametros.util
+
+/*/{Protheus.doc} ExpressionRunner
+    Execução protegida das expressões (macro) cadastradas no Super Parâmetros
+    (WFU_VLDITE e WFU_VLDATV). Usada pelo cadastro (ParamCadService) e pela consulta
+    (SuperParametros), em uma rotina única.
+    @author Gabriel Lacerda Correia
+    @since 26/11/2026
+    @version 1.0
+/*/
+Class ExpressionRunner
+
+    Public Method New() Constructor
+    Public Method Run(c_Expressao As Character, x_Resultado As Variant, c_Erro As Character) As Logical // Executa a expressão protegida por try/catch (erro não derruba a rotina)
+
+EndClass
+
+/*/{Protheus.doc} New
+    Construtor da classe ExpressionRunner.
+    @author Gabriel Lacerda Correia
+    @since 26/11/2026
+    @version 1.0
+    @return Self, instância da classe
+/*/
+Method New() Class ExpressionRunner
+Return Self
+
+/*/{Protheus.doc} Run
+    Executa uma expressão (macro) protegida por try/catch: um erro na expressão não derruba
+    a rotina, é devolvido em c_Erro.
+    Uma expressão que devolve Nil também é tratada como erro: nos testes de 25/11/2026,
+    expressões com erro de sintaxe devolviam Nil sem passar pelo tratamento de erro.
+    Antes ficava em SuperParametros:ExecuteExpression.
+    @author Gabriel Lacerda Correia
+    @since 25/11/2026
+    @version 1.1
+    @param c_Expressao, Character, expressão a executar (ex.: Day(dDataBase) != 31)
+    @param x_Resultado, Variant, (referência) resultado da expressão
+    @param c_Erro, Character, (referência) descrição do erro, vazio se executou
+    @return l_Ret, .T. se a expressão executou sem erro e devolveu um valor
+/*/
+Method Run(c_Expressao As Character, x_Resultado As Variant, c_Erro As Character) As Logical Class ExpressionRunner
+    Local o_Erro As Object
+    Local l_Ret  As Logical
+
+    l_Ret       := .T.
+    c_Erro      := ""
+    x_Resultado := Nil
+
+    Try
+        x_Resultado := &(c_Expressao) // Executa a expressão cadastrada
+    Catch o_Erro
+        // Erro na execução: devolve a descrição do Protheus em vez de derrubar a rotina
+        l_Ret  := .F.
+        c_Erro := AllTrim(o_Erro:Description)
+    EndTry
+
+    // Segurança: sem erro capturado, mas sem resultado (ex.: erro de sintaxe que devolveu Nil)
+    If l_Ret .And. ValType(x_Resultado) == "U"
+        l_Ret  := .F.
+        c_Erro := "a expressão não pôde ser executada: verifique a sintaxe e se as funções e variáveis usadas existem"
+    EndIf
+
+Return l_Ret

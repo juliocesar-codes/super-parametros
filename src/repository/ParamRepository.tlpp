@@ -1,0 +1,227 @@
+#Include "TOTVS.CH"
+
+Namespace custom.superparametros.repository
+
+Using Namespace custom.superparametros.util
+
+/*/{Protheus.doc} ParamRepository
+    Acesso a dados do cadastro de parâmetros (WFU e WFV): buscas por código e apelido,
+    itens de outras filiais e as consultas SQL de uso como grupo. Toda busca guarda e
+    devolve a área da tabela, para não tirar o MVC do registro em que ele está.
+    @author Gabriel Lacerda Correia
+    @since 26/11/2026
+    @version 1.0
+/*/
+Class ParamRepository
+
+    Private Data o_Const As Object
+    Public Method New() Constructor
+
+    // WFU (parâmetro)
+    Public Method DadosPorCodigo(c_Codigo As Character, c_Apelido As Character, c_Ativo As Character) As Logical // Apelido e situação do parâmetro pelo código (referência)
+    Public Method ApelidoPorCodigo(c_Codigo As Character) As Character                                          // Apelido (WFU_ALIAS) do parâmetro pelo código
+    Public Method ApelidoEmUso(c_Apelido As Character) As Logical                                               // Verifica se já existe parâmetro com o apelido
+
+    // WFV (itens)
+    Public Method ItemEmOutraFilial(c_Codigo As Character, c_FilItem As Character, c_Item As Character) As Logical // Procura item do parâmetro em outra filial (referência)
+    Public Method ParametroUsadoComoGrupo(c_Codigo As Character) As Character                                     // Código do parâmetro que usa o informado como grupo (vazio se nenhum)
+    Public Method ParametroTemGrupo(c_Codigo As Character) As Logical                                             // Verifica se o parâmetro tem linhas de grupo
+
+    Private Method BuscaCodigoWFV(c_Filtro As Character) As Character // Consulta SQL na WFV (todas as filiais) e devolve o menor WFV_CODPAR do filtro
+
+EndClass
+
+/*/{Protheus.doc} New
+    Construtor da classe ParamRepository.
+    @author Gabriel Lacerda Correia
+    @since 26/11/2026
+    @version 1.0
+    @return Self, instância da classe
+/*/
+Method New() Class ParamRepository
+    ::o_Const := SPConstantes():New()
+Return Self
+
+/*/{Protheus.doc} DadosPorCodigo
+    Busca o parâmetro pelo código e devolve o apelido e a situação (WFU_ATIVO).
+    Antes ficava dentro do ParamCadService:ValidaLinhaGrupo.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.1
+    @param c_Codigo, Character, código do parâmetro (WFU_COD)
+    @param c_Apelido, Character, (referência) apelido do parâmetro (vazio se não existir)
+    @param c_Ativo, Character, (referência) situação do parâmetro (WFU_ATIVO)
+    @return l_Achou, .T. se o parâmetro existe
+/*/
+Method DadosPorCodigo(c_Codigo As Character, c_Apelido As Character, c_Ativo As Character) As Logical Class ParamRepository
+    Local l_Achou   := .F.
+    Local a_AreaWFU := {}
+
+    c_Apelido := ""
+    c_Ativo   := ""
+
+    // Sem código, não há o que procurar
+    If Empty(c_Codigo)
+        Return .F.
+    EndIf
+
+    DbSelectArea("WFU")
+    a_AreaWFU := WFU->(GetArea())          // Guarda a área da WFU (o MVC está posicionado no parâmetro da tela)
+    WFU->(DbSetOrder(::o_Const:WfuOrdCodigo()))   // WFU_FILIAL + WFU_COD
+    If WFU->(DbSeek(xFilial("WFU") + PadR(AllTrim(c_Codigo), TamSX3("WFU_COD")[1])))
+        l_Achou   := .T.
+        c_Apelido := AllTrim(WFU->WFU_ALIAS)
+        c_Ativo   := WFU->WFU_ATIVO
+    EndIf
+    RestArea(a_AreaWFU) // Devolve a área da WFU
+
+Return l_Achou
+
+/*/{Protheus.doc} ApelidoPorCodigo
+    Devolve o apelido (WFU_ALIAS) do parâmetro pelo código. Usado no gatilho e na carga do
+    campo virtual WFV_DESGRP e nas mensagens.
+    Antes era o ParamCadService:ApelidoDoParametro.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.1
+    @param c_Codigo, Character, código do parâmetro (WFU_COD)
+    @return c_Apelido, apelido do parâmetro (vazio se não existir)
+/*/
+Method ApelidoPorCodigo(c_Codigo As Character) As Character Class ParamRepository
+    Local c_Apelido := ""
+    Local c_Ativo   := ""
+
+    ::DadosPorCodigo(c_Codigo, @c_Apelido, @c_Ativo)
+
+Return c_Apelido
+
+/*/{Protheus.doc} ApelidoEmUso
+    Verifica se já existe um parâmetro com o apelido informado.
+    Antes ficava dentro do ParamCadService:PosValidWFU.
+    @author Julio César
+    @since 18/11/2026
+    @version 1.1
+    @param c_Apelido, Character, apelido a procurar (já em maiúsculas e sem espaços nas pontas)
+    @return l_EmUso, .T. se o apelido já está em uso
+/*/
+Method ApelidoEmUso(c_Apelido As Character) As Logical Class ParamRepository
+    Local l_EmUso   := .F.
+    Local a_AreaWFU := {}
+
+    DbSelectArea("WFU")
+    a_AreaWFU := WFU->(GetArea())         // Guarda a área da WFU para não afetar quem chamou
+    WFU->(DbSetOrder(::o_Const:WfuOrdApelido())) // WFU_FILIAL + WFU_ALIAS
+
+    // Achou, então o apelido já está em uso
+    l_EmUso := WFU->(DbSeek(xFilial("WFU") + PadR(c_Apelido, TamSX3("WFU_ALIAS")[1])))
+
+    RestArea(a_AreaWFU) // Devolve a área da WFU
+
+Return l_EmUso
+
+/*/{Protheus.doc} ItemEmOutraFilial
+    Procura item do parâmetro em outra filial que não a do usuário (mesmo que a tela não
+    o exiba). Com a WFV compartilhada, todas as filiais resolvem para o mesmo valor e
+    nunca há item "de outra filial".
+    Antes ficava dentro do ParamCadService:ChecaExclusaoParametro.
+    @author Julio César
+    @since 19/11/2026
+    @version 1.1
+    @param c_Codigo, Character, código do parâmetro (WFU_COD)
+    @param c_FilItem, Character, (referência) filial do item encontrado (vazio se nenhum)
+    @param c_Item, Character, (referência) número do item encontrado
+    @return l_Achou, .T. se existe item do parâmetro em outra filial
+/*/
+Method ItemEmOutraFilial(c_Codigo As Character, c_FilItem As Character, c_Item As Character) As Logical Class ParamRepository
+    Local a_Area    := {}
+    Local a_Filiais := FWAllFilial()
+    Local c_FilWFV  := ""
+    Local n_I       := 0
+
+    c_FilItem := ""
+    c_Item    := ""
+
+    DbSelectArea("WFV")
+    a_Area := WFV->(GetArea())          // Guarda a área da WFV para não afetar quem chamou
+    WFV->(DbSetOrder(::o_Const:WfvOrdItem()))  // WFV_FILIAL + WFV_CODPAR + WFV_ITEM
+
+    // Percorre todas as filiais da empresa
+    For n_I := 1 To Len(a_Filiais)
+
+        // Converte a filial para o modo de compartilhamento da WFV (exclusiva ou compartilhada)
+        c_FilWFV := FWxFilial("WFV", a_Filiais[n_I])
+
+        // Pula a filial do usuario (ou, com WFV compartilhada, a que resolve para o mesmo valor)
+        If c_FilWFV == xFilial("WFV")
+            Loop
+        EndIf
+
+        // Procura itens desse parâmetro nessa filial
+        If WFV->(DbSeek(c_FilWFV + c_Codigo))
+            c_FilItem := c_FilWFV
+            c_Item    := WFV->WFV_ITEM
+            Exit
+        EndIf
+    Next
+
+    RestArea(a_Area) // Devolve a área da WFV
+
+Return !Empty(c_FilItem)
+
+/*/{Protheus.doc} ParametroUsadoComoGrupo
+    Verifica se o parâmetro é usado como grupo (WFV_IDPAR) em algum outro parâmetro, em
+    qualquer filial.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.1
+    @param c_Codigo, Character, código do parâmetro (WFU_COD)
+    @return c_Usado, código do parâmetro que o usa como grupo (vazio se nenhum)
+/*/
+Method ParametroUsadoComoGrupo(c_Codigo As Character) As Character Class ParamRepository
+    Local c_Cod := StrTran(PadR(AllTrim(c_Codigo), TamSX3("WFV_IDPAR")[1]), "'", "''") // Código no tamanho do campo (aspas escapadas)
+Return ::BuscaCodigoWFV("WFV_IDPAR = '" + c_Cod + "'")
+
+/*/{Protheus.doc} ParametroTemGrupo
+    Verifica se o parâmetro tem linhas de grupo (WFV_IDPAR preenchido), em qualquer filial.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.1
+    @param c_Codigo, Character, código do parâmetro (WFU_COD)
+    @return l_Ret, .T. se o parâmetro tem ao menos uma linha de grupo
+/*/
+Method ParametroTemGrupo(c_Codigo As Character) As Logical Class ParamRepository
+    Local c_Cod   := StrTran(PadR(AllTrim(c_Codigo), TamSX3("WFV_CODPAR")[1]), "'", "''") // Código no tamanho do campo (aspas escapadas)
+    Local c_Vazio := Space(TamSX3("WFV_IDPAR")[1])                                          // Grupo vazio, no tamanho do campo (funciona em qualquer banco)
+Return !Empty(::BuscaCodigoWFV("WFV_CODPAR = '" + c_Cod + "' AND WFV_IDPAR <> '" + c_Vazio + "'"))
+
+/*/{Protheus.doc} BuscaCodigoWFV
+    Consulta SQL na WFV, em todas as filiais, e devolve o menor WFV_CODPAR que atende ao
+    filtro. Usa MIN + COALESCE (sem TOP/LIMIT) para funcionar em qualquer banco.
+    Antes era o ParamCadService:BuscaParametroWFV.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.1
+    @param c_Filtro, Character, condição SQL (ex.: WFV_IDPAR = '000010')
+    @return c_Codigo, código do parâmetro encontrado (vazio se nenhum)
+/*/
+Method BuscaCodigoWFV(c_Filtro As Character) As Character Class ParamRepository
+    Local c_Query  := ""
+    Local c_Alias  := ""
+    Local c_Codigo := ""
+
+    // Sem filtro de filial: a regra vale para todas as filiais
+    c_Query := "SELECT COALESCE(MIN(WFV_CODPAR), ' ') AS CODPAR"
+    c_Query += "  FROM " + RetSqlName("WFV")
+    c_Query += " WHERE " + c_Filtro
+    c_Query += "   AND D_E_L_E_T_ = ' '"
+    c_Query := ChangeQuery(c_Query) // Adapta a sintaxe ao banco em uso
+
+    c_Alias := MPSysOpenQuery(c_Query) // Executa e devolve um alias temporário
+
+    If !(c_Alias)->(Eof())
+        c_Codigo := AllTrim((c_Alias)->CODPAR)
+    EndIf
+
+    (c_Alias)->(DbCloseArea()) // Fecha o alias temporário
+
+Return c_Codigo

@@ -1,0 +1,65 @@
+#Include "TOTVS.CH"
+
+Namespace custom.superparametros.util
+
+/*/{Protheus.doc} ParamMessage
+    Exibição das mensagens do Super Parâmetros. Quem chama monta o texto (o que aconteceu,
+    o motivo, o tipo do erro e a função) e informa o título com a versão do próprio fonte,
+    como pede o padrão de código. Esta classe só decide como mostrar.
+    @author Gabriel Lacerda Correia
+    @since 26/11/2026
+    @version 1.0
+/*/
+Class ParamMessage
+
+    Public Method New() Constructor
+    Public Method ShowHelp(c_Titulo As Character, c_Msg As Character, c_Ajuda As Character) As Logical // Mensagem de validação (Help), com a orientação de correção
+    Public Method ShowError(c_Titulo As Character, c_Msg As Character) As Logical                      // Erro: sempre no log e, se houver tela, em um alerta
+
+EndClass
+
+/*/{Protheus.doc} New
+    Construtor da classe ParamMessage.
+    @author Gabriel Lacerda Correia
+    @since 26/11/2026
+    @version 1.0
+    @return Self, instância da classe
+/*/
+Method New() Class ParamMessage
+Return Self
+
+/*/{Protheus.doc} ShowHelp
+    Mostra uma mensagem de validação pelo Help, com a orientação de como corrigir.
+    Usada nas validações da tela (o MVC exibe o Help ao barrar o campo, a linha ou a gravação).
+    @author Gabriel Lacerda Correia
+    @since 26/11/2026
+    @version 1.0
+    @param c_Titulo, Character, título com o nome e a versão do fonte que chamou
+    @param c_Msg, Character, o que aconteceu, o motivo e o tipo do erro
+    @param c_Ajuda, Character, como corrigir
+    @return l_Ret, sempre .F. (permite "Return ::o_Msg:ShowHelp(...)" em quem barra a ação)
+/*/
+Method ShowHelp(c_Titulo As Character, c_Msg As Character, c_Ajuda As Character) As Logical Class ParamMessage
+    Help(Nil, Nil, c_Titulo, Nil, c_Msg, 1, 0, Nil, Nil, Nil, Nil, Nil, {c_Ajuda})
+Return .F.
+
+/*/{Protheus.doc} ShowError
+    Informa um erro: sempre registra no log (ConOut) e, se houver tela (não é job ou
+    schedule), mostra em um alerta.
+    @author Gabriel Lacerda Correia
+    @since 26/11/2026
+    @version 1.0
+    @param c_Titulo, Character, título com o nome e a versão do fonte que chamou
+    @param c_Msg, Character, o que aconteceu, o motivo, o tipo do erro e a função
+    @return l_Ret, sempre .F.
+/*/
+Method ShowError(c_Titulo As Character, c_Msg As Character) As Logical Class ParamMessage
+
+    ConOut("[" + c_Titulo + "] " + c_Msg) // Sempre registra no log
+
+    // Com tela (não é job/schedule), mostra para o usuário
+    If !IsBlind()
+        FWAlertError(c_Msg, c_Titulo)
+    EndIf
+
+Return .F.

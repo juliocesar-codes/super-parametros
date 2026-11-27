@@ -1,0 +1,428 @@
+#include "totvs.ch"
+
+// Camada de consulta: classe usada pelos programas para ler os parâmetros
+namespace custom.superparametros.model
+
+using namespace custom.superparametros.util // Expressões (ExpressionRunner) e mensagens (ParamMessage)
+
+#define SUPERPARAMETROS_VERSAO  "v.26112026"                                  // Versão do código (v.DDMMAAAA), atualizar a cada alteração
+#define SUPERPARAMETROS_TITULO  "SUPERPARAMETROS - " + SUPERPARAMETROS_VERSAO // Título padrão das mensagens (fonte + versão)
+
+/*/{Protheus.doc} SuperParametros
+    Consulta dos parâmetros customizados (WFU = parâmetro, WFV = lista de exceções e grupos).
+    @author Gabriel Lacerda Correia
+    @since 18/11/2026
+    @version 1.0
+/*/
+class SuperParametros
+
+    // Não inicializa os dados do parâmetro, buscamos os dados do parâmetro com o apelido informado na função GetParamValue ou ValidEntityParamList. 
+    // O construtor apenas inicializa os dados do parâmetro com valores vazios.
+    private data c_Codigo   as character
+    private data c_Tipo     as character
+    private data c_Conteudo     as character
+    private data c_Apelido      as character // Apelido do parâmetro encontrado (WFU_ALIAS), usado na mensagem de erro
+    private data c_VldAtv       as character // Expressão da validação de ativação (WFU_VLDATV)
+    private data c_ConteudoItem as character // Conteúdo do item encontrado pelo FindItem (vazio = usa o do parâmetro)
+    private data o_Expr         as object    // Execução protegida das expressões (ExpressionRunner)
+    private data o_Msg          as object    // Exibição das mensagens (ParamMessage)
+    private data o_Const        as object
+
+    public method new() constructor
+    public method GetParamValue(c_Apelido as character, c_Chave as character, x_Default as variant) as variant // Retorna o valor do parâmetro para a entidade
+    public method ValidEntityParamList(c_Apelido as character, c_Chave as character) as logical                // Retorna .T. se a entidade faz parte da lista do parâmetro
+
+    private method FindParam(c_Apelido as character) as logical // Procura o parâmetro ativo pelo apelido e guarda código, tipo e conteúdo.
+    private method HasItems() as logical                        // Verifica se o parâmetro tem algum item na WFV (busca parcial pela chave).
+    private method FindItem(c_Chave as character) as logical    // Procura a chave exata, depois o "*", depois nos grupos. Guarda o conteúdo do item.
+    private method Convert(c_Valor as character) as variant     // Converte o texto gravado para o tipo do parâmetro.
+
+    private method CheckActivation() as logical                                          // Executa a expressão do WFU_VLDATV (validação de ativação) pelo ExpressionRunner.
+    private method FindInGroups(c_Chave as character) as logical                         // Procura a chave nos parâmetros usados como grupo (linhas com WFV_IDPAR).
+    private method KeyInGroup(c_CodGrupo as character, c_Chave as character) as logical  // Verifica se a chave (ou o "*") está na lista do parâmetro grupo.
+    private method ShowActivationError(c_Erro as character)                              // Mostra (ou registra no log, sem tela) o erro da expressão do WFU_VLDATV.
+    private method ShowDefaultError(c_Apelido as character, c_Origem as character)       // Mostra (ou registra no log, sem tela) que o x_Default não foi informado.
+
+endclass
+
+/*/{Protheus.doc} new
+    Construtor da classe, inicializa os dados do parâmetro e as camadas usadas.
+    @author Gabriel Lacerda Correia
+    @since 18/11/2026
+    @version 1.1
+    @return self, instância da classe SuperParametros
+/*/
+method new() class SuperParametros
+    ::c_Codigo   := ""
+    ::c_Tipo     := ""
+    ::c_Conteudo     := ""
+    ::c_Apelido      := ""
+    ::c_VldAtv       := ""
+    ::c_ConteudoItem := ""
+    ::o_Expr         := ExpressionRunner():New() // Execução das expressões
+    ::o_Msg          := ParamMessage():New()     // Mensagens
+    ::o_Const        := SPConstantes():New()
+return self
+
+/*/{Protheus.doc} GetParamValue
+    Retorna o valor do parâmetro para a chave.
+    0. x_Default não informado                 -> mensagem de erro e Nil
+    1. Parâmetro não existe ou inativo         -> x_Default
+    2. WFU_VLDATV falso ou com erro            -> x_Default
+    3. Chamada sem chave                       -> WFU_CONTEU
+    4. Parâmetro sem itens na filial           -> WFU_CONTEU
+    5. Chave exata ou "*" na lista             -> WFV_CONTEU (se vazio, WFU_CONTEU)
+    6. Chave dentro de um grupo (WFV_IDPAR)    -> WFU_CONTEU
+    7. Chave fora da lista                     -> x_Default
+    @author Gabriel Lacerda Correia
+    @since 18/11/2026
+    @version 1.1
+    @param c_Apelido, character, apelido de identificação do parâmetro (WFU_ALIAS)
+    @param c_Chave, character, chave de busca (ex: código do usuário). Opcional
+    @param x_Default, variant, valor retornado quando o parâmetro não se aplica (não existe, inativo, WFU_VLDATV falso ou chave fora da lista). Obrigatório
+    @return x_Retorno, valor do parâmetro convertido para o tipo cadastrado (Nil se o x_Default não for informado)
+/*/
+method GetParamValue(c_Apelido as character, c_Chave as character, x_Default as variant) as variant class SuperParametros
+
+    local a_Area    as array
+    local a_AreaWFU as array
+    local a_AreaWFV as array
+    local x_Retorno as variant
+
+    Default c_Chave := ""
+
+    // O valor padrão de retorno é obrigatório: sem ele, quem chamou não teria um retorno seguro
+    // quando o parâmetro não se aplica. Avisa e devolve Nil, sem consultar o parâmetro.
+    if ValType(x_Default) == "U"
+        ::ShowDefaultError(c_Apelido, ProcName(1) + " (linha " + cValToChar(ProcLine(1)) + ")") // Rotina que chamou o GetParamValue
+        return Nil
+    endif
+
+    a_Area    := GetArea()
+    DbSelectArea("WFU")
+    DbSelectArea("WFV")
+    a_AreaWFU := WFU->(GetArea())
+    a_AreaWFV := WFV->(GetArea())
+    x_Retorno := x_Default
+
+    if ::FindParam(c_Apelido) // Procura o parâmetro pelo apelido: precisa existir, estar ativo e passar no WFU_VLDATV
+
+        if Empty(c_Chave) .or. !::HasItems()
+            // Chamada sem chave ou parâmetro sem itens na filial: vale o conteúdo do parâmetro para todos
+            x_Retorno := ::Convert(::c_Conteudo)
+
+        elseif ::FindItem(c_Chave)
+            // Chave exata ou "*": conteúdo do item, se ele tiver um. Chave dentro de um grupo: conteúdo do parâmetro
+            x_Retorno := ::Convert(IIf(Empty(::c_ConteudoItem), ::c_Conteudo, ::c_ConteudoItem))
+
+        endif
+        // Chave fora da lista (sem a chave exata, sem o "*" e fora dos grupos): mantém o x_Default
+
+    endif
+
+    RestArea(a_AreaWFV)
+    RestArea(a_AreaWFU)
+    RestArea(a_Area)
+
+return x_Retorno
+
+/*/{Protheus.doc} ValidEntityParamList
+    Retorna .T. se a chave faz parte da lista do parâmetro.
+    1. Parâmetro não existe, inativo ou WFU_VLDATV falso -> .F.
+    2. Parâmetro sem itens na filial                      -> .T. (vale para todos)
+    3. Chave exata, "*" ou chave dentro de um grupo       -> .T.
+    4. Chamada sem chave ou chave fora da lista           -> .F.
+    @author Gabriel Lacerda Correia
+    @since 18/11/2026
+    @version 1.0
+    @param c_Apelido, character, apelido de identificação do parâmetro (WFU_ALIAS)
+    @param c_Chave, character, chave de busca (ex: código do usuário)
+    @return l_Retorno, .T. se a chave está na lista do parâmetro
+/*/
+method ValidEntityParamList(c_Apelido as character, c_Chave as character) as logical class SuperParametros
+
+    local a_Area    as array
+    local a_AreaWFU as array
+    local a_AreaWFV as array
+    local l_Retorno as logical
+
+    Default c_Chave := ""
+
+    a_Area    := GetArea()
+    DbSelectArea("WFU")
+    DbSelectArea("WFV")
+    a_AreaWFU := WFU->(GetArea())
+    a_AreaWFV := WFV->(GetArea())
+    l_Retorno := .F.
+
+    if ::FindParam(c_Apelido) // Procura o parâmetro pelo apelido: precisa existir, estar ativo e passar no WFU_VLDATV
+        l_Retorno := !::HasItems() .or. (!Empty(c_Chave) .and. ::FindItem(c_Chave)) // Sem itens vale para todos; senão, a chave precisa estar na lista
+    endif
+
+    RestArea(a_AreaWFV)
+    RestArea(a_AreaWFU)
+    RestArea(a_Area)
+
+return l_Retorno
+
+/*/{Protheus.doc} FindParam
+    Procura o parâmetro ativo pelo apelido e guarda código, tipo e conteúdo.
+    Se houver validação de ativação (WFU_VLDATV), ela também precisa dar verdadeiro.
+    @author Gabriel Lacerda Correia
+    @since 18/11/2026
+    @version 1.0
+    @param c_Apelido, character, apelido de identificação do parâmetro (WFU_ALIAS)
+    @return l_Retorno, .T. se encontrou o parâmetro, ele está ativo e passou no WFU_VLDATV
+/*/
+method FindParam(c_Apelido as character) as logical class SuperParametros
+
+    local l_Retorno as logical
+
+    l_Retorno := .F.
+
+    WFU->(DbSetOrder(::o_Const:WfuOrdApelido())) // WFU_FILIAL + WFU_ALIAS
+
+    if WFU->(DbSeek(xFilial("WFU") + PadR(Upper(c_Apelido), TamSX3("WFU_ALIAS")[1]))) ; // Procura o parâmetro ativo pelo apelido
+       .and. WFU->WFU_ATIVO == ::o_Const:Ativo() // Verifica se o parï¿½metro estï¿½ ativo
+
+        ::c_Codigo   := WFU->WFU_COD    // Codigo do parâmetro (WFU_COD) 
+        ::c_Tipo     := WFU->WFU_TIPO   // Tipo do parâmetro (WFU_TIPO)
+        ::c_Conteudo := WFU->WFU_CONTEU // Conteúdo do parâmetro (WFU_CONTEU)
+        ::c_Apelido  := AllTrim(WFU->WFU_ALIAS)  // Apelido do parâmetro, para a mensagem de erro
+        ::c_VldAtv   := AllTrim(WFU->WFU_VLDATV) // Expressão da validação de ativação
+
+        // Ativo pelo WFU_ATIVO; se houver expressão de ativação, ela decide
+        l_Retorno    := ::CheckActivation()
+
+    endif
+
+return l_Retorno
+
+/*/{Protheus.doc} HasItems
+    Verifica se o parâmetro tem algum item na WFV (busca parcial pela chave).
+    @author Gabriel Lacerda Correia
+    @since 18/11/2026
+    @version 1.0
+    @return l_Retorno, .T. se existe ao menos um item na WFV para o parâmetro
+/*/
+method HasItems() as logical class SuperParametros
+    
+    local l_Retorno as logical
+
+    WFV->(DbSetOrder(::o_Const:WfvOrdChave()))
+    l_Retorno := WFV->(DbSeek(xFilial("WFV") + ::c_Codigo)) // Procura o primeiro item da WFV para o parâmetro (busca parcial pela chave)
+
+return l_Retorno //Retorna .T. se existe ao menos um item na WFV para o parâmetro
+
+/*/{Protheus.doc} FindItem
+    Procura a chave exata; se não achar, o "*"; se não achar, dentro dos grupos.
+    Guarda o conteúdo do item em ::c_ConteudoItem (vazio quando achou pelo grupo).
+    @author Gabriel Lacerda Correia
+    @since 18/11/2026
+    @version 1.0
+    @param c_Chave, character, chave de busca (ex: código do usuário)
+    @return l_Retorno, .T. se achou a chave exata, o "*" ou a chave em um grupo
+/*/
+method FindItem(c_Chave as character) as logical class SuperParametros
+
+    local n_TamanhoChave as numeric
+    local l_Retorno      as logical
+
+    ::c_ConteudoItem := ""
+
+    // Chave vazia não é procurada: no índice 2 ela cairia nas linhas de grupo (que têm a chave vazia)
+    if Empty(c_Chave)
+        return .F.
+    endif
+
+    n_TamanhoChave := TamSX3("WFV_CHBUSC")[1]
+
+    WFV->(DbSetOrder(::o_Const:WfvOrdChave())) // WFV_FILIAL + WFV_CODPAR + WFV_CHBUSC
+
+    l_Retorno := WFV->(DbSeek(xFilial("WFV") + ::c_Codigo + PadR(c_Chave, n_TamanhoChave))) .or. ; // Achou a chave exata
+                 WFV->(DbSeek(xFilial("WFV") + ::c_Codigo + PadR(::o_Const:ChaveTodos(), n_TamanhoChave))) // Achou o "*" na WFV
+
+    if l_Retorno
+        ::c_ConteudoItem := WFV->WFV_CONTEU // Conteúdo do item (se vazio, quem chamou usa o do parâmetro)
+    else
+        l_Retorno := ::FindInGroups(c_Chave) // Não achou direto: procura nos grupos (o conteúdo fica vazio)
+    endif
+
+return l_Retorno
+
+/*/{Protheus.doc} Convert
+    Converte o texto gravado para o tipo do parâmetro.
+    Lógico: "V" = verdadeiro, "F" = falso (maiúscula ou minúscula).
+    @author Gabriel Lacerda Correia
+    @since 18/11/2026
+    @version 1.1
+    @param c_Valor, character, texto gravado no parâmetro ou na entidade
+    @return x_Retorno, valor convertido (numérico, lógico, data ou caractere)
+/*/
+method Convert(c_Valor as character) as variant class SuperParametros
+
+    local c_Texto   as character
+    local x_Retorno as variant
+
+    c_Texto := AllTrim(c_Valor)
+
+    do case
+        case ::c_Tipo == ::o_Const:TipoNumerico()
+            x_Retorno := Val(c_Texto)
+
+        case ::c_Tipo == ::o_Const:TipoLogico()
+            x_Retorno := (Upper(c_Texto) == ::o_Const:Verdadeiro()) // "V" ou "v" = verdadeiro; qualquer outro valor = falso
+
+        case ::c_Tipo == ::o_Const:TipoData()
+            x_Retorno := SToD(SubStr(c_Texto, 7, 4) + SubStr(c_Texto, 4, 2) + SubStr(c_Texto, 1, 2)) // DD/MM/AAAA -> AAAAMMDD -> data
+            
+        otherwise
+            x_Retorno := c_Texto
+    endcase
+
+return x_Retorno
+
+/*/{Protheus.doc} CheckActivation
+    Executa a expressão da validação de ativação (WFU_VLDATV) pelo ExpressionRunner.
+    Sem expressão, o parâmetro vale só pelo WFU_ATIVO. Erro ou retorno que não seja
+    verdadeiro/falso: o parâmetro é tratado como inativo e o erro é informado.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.2
+    @return l_Retorno, .T. se não há expressão ou se ela devolveu verdadeiro
+/*/
+method CheckActivation() as logical class SuperParametros
+
+    local x_Resultado as variant
+    local c_Erro      as character
+    local l_Retorno   as logical
+
+    // Sem expressão: o parâmetro vale só pelo WFU_ATIVO
+    if Empty(::c_VldAtv)
+        return .T.
+    endif
+
+    l_Retorno := .F.
+    c_Erro    := ""
+
+    if !::o_Expr:Run(::c_VldAtv, @x_Resultado, @c_Erro)
+        // Erro na expressão (sintaxe, função ou variável inexistente...): informa e o parâmetro não vale
+        ::ShowActivationError(c_Erro)
+    elseif ValType(x_Resultado) != "L"
+        // Executou, mas não devolveu verdadeiro ou falso
+        ::ShowActivationError("a expressão não devolveu verdadeiro ou falso (devolveu o tipo " + ValType(x_Resultado) + ")")
+    else
+        l_Retorno := x_Resultado
+    endif
+
+return l_Retorno
+
+/*/{Protheus.doc} FindInGroups
+    Procura a chave nos parâmetros usados como grupo (linhas com WFV_IDPAR preenchido).
+    As linhas de grupo têm a chave vazia, então ficam juntas no início do índice 2.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param c_Chave, character, chave de busca (ex: código do usuário)
+    @return l_Retorno, .T. se a chave está na lista de algum grupo
+/*/
+method FindInGroups(c_Chave as character) as logical class SuperParametros
+
+    local c_Filial       as character
+    local n_TamanhoChave as numeric
+    local l_Retorno      as logical
+
+    l_Retorno      := .F.
+    c_Filial       := xFilial("WFV")
+    n_TamanhoChave := TamSX3("WFV_CHBUSC")[1]
+
+    WFV->(DbSetOrder(::o_Const:WfvOrdChave())) // WFV_FILIAL + WFV_CODPAR + WFV_CHBUSC
+
+    // Posiciona na primeira linha de grupo (chave em branco) e percorre só elas
+    WFV->(DbSeek(c_Filial + ::c_Codigo + Space(n_TamanhoChave)))
+
+    while !WFV->(Eof()) .and. WFV->(WFV_FILIAL + WFV_CODPAR) == c_Filial + ::c_Codigo .and. Empty(WFV->WFV_CHBUSC)
+
+        // Achou a chave no grupo: para de procurar
+        if !Empty(WFV->WFV_IDPAR) .and. ::KeyInGroup(WFV->WFV_IDPAR, c_Chave)
+            l_Retorno := .T.
+            exit
+        endif
+
+        WFV->(DbSkip())
+    enddo
+
+return l_Retorno
+
+/*/{Protheus.doc} KeyInGroup
+    Verifica se a chave (ou o "*") está na lista do parâmetro grupo. Não desce para os
+    grupos do grupo: não existe grupo dentro de grupo.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param c_CodGrupo, character, código do parâmetro grupo (WFV_IDPAR)
+    @param c_Chave, character, chave de busca (ex: código do usuário)
+    @return l_Retorno, .T. se a chave exata ou o "*" está na lista do grupo
+/*/
+method KeyInGroup(c_CodGrupo as character, c_Chave as character) as logical class SuperParametros
+
+    local a_AreaWFV      as array
+    local n_TamanhoChave as numeric
+    local l_Retorno      as logical
+
+    a_AreaWFV      := WFV->(GetArea()) // Guarda a linha de grupo, para o laço do FindInGroups continuar dela
+    n_TamanhoChave := TamSX3("WFV_CHBUSC")[1]
+
+    l_Retorno := WFV->(DbSeek(xFilial("WFV") + c_CodGrupo + PadR(c_Chave, n_TamanhoChave))) .or. ; // Chave exata no grupo
+                 WFV->(DbSeek(xFilial("WFV") + c_CodGrupo + PadR(::o_Const:ChaveTodos(), n_TamanhoChave))) // "*" no grupo
+
+    RestArea(a_AreaWFV) // Volta para a linha de grupo
+
+return l_Retorno
+
+/*/{Protheus.doc} ShowActivationError
+    Informa o erro da expressão de ativação (WFU_VLDATV): sempre registra no log e, se
+    houver tela, mostra para o usuário.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param c_Erro, character, descrição do erro
+/*/
+method ShowActivationError(c_Erro as character) class SuperParametros
+
+    local c_Msg as character
+
+    // O que aconteceu, o comando executado, o tipo do erro e a função (a versão vai no título)
+    c_Msg := "O parâmetro " + ::c_Apelido + " no campo Validação de Ativação (WFU_VLDATV) executou o seguinte comando: " + ::c_VldAtv + ", que resultou em um erro." + CRLF
+    c_Msg += "Erro: " + c_Erro + "." + CRLF
+    c_Msg += "Contate um dos administradores do sistema." + CRLF + CRLF
+    c_Msg += "Tipo: erro interno." + CRLF
+    c_Msg += "Função: SuperParametros.CheckActivation"
+
+    ::o_Msg:ShowError(SUPERPARAMETROS_TITULO, c_Msg) // Sempre registra no log e, se houver tela, mostra para o usuário
+
+return
+
+/*/{Protheus.doc} ShowDefaultError
+    Informa que o GetParamValue foi chamado sem o valor padrão de retorno (x_Default):
+    sempre registra no log e, se houver tela, mostra para o usuário.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param c_Apelido, character, apelido do parâmetro consultado
+    @param c_Origem, character, rotina (e linha) que chamou o GetParamValue
+/*/
+method ShowDefaultError(c_Apelido as character, c_Origem as character) class SuperParametros
+
+    local c_Msg as character
+
+    // O que aconteceu, onde aconteceu, o tipo do erro e a função (a versão vai no título)
+    c_Msg := "O valor padrão de retorno não foi informado na chamada da função GetParamValue para o parâmetro " + AllTrim(c_Apelido) + "." + CRLF
+    c_Msg += "Rotina que chamou: " + c_Origem + "." + CRLF
+    c_Msg += "Contate o departamento de T.I." + CRLF + CRLF
+    c_Msg += "Tipo: erro interno." + CRLF
+    c_Msg += "Função: SuperParametros.GetParamValue"
+
+    ::o_Msg:ShowError(SUPERPARAMETROS_TITULO, c_Msg) // Sempre registra no log e, se houver tela, mostra para o usuário
+
+return

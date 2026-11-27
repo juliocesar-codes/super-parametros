@@ -1,0 +1,70 @@
+#Include "TOTVS.CH"
+
+Namespace custom.superparametros.util
+
+Class SPConstantes
+    Public Method New() Constructor
+    Public Method TipoCaractere() As Character
+    Public Method TipoNumerico() As Character
+    Public Method TipoLogico() As Character
+    Public Method TipoData() As Character
+    Public Method Verdadeiro() As Character
+    Public Method Falso() As Character
+    Public Method Ativo() As Character
+    Public Method Inativo() As Character
+    Public Method EdicaoLivre() As Character
+    Public Method ModoAdmin() As Character
+    Public Method ChaveTodos() As Character
+    Public Method WfuOrdCodigo() As Numeric
+    Public Method WfuOrdApelido() As Numeric
+    Public Method WfvOrdItem() As Numeric
+    Public Method WfvOrdChave() As Numeric
+EndClass
+
+Method New() Class SPConstantes
+Return Self
+
+Method TipoCaractere() As Character Class SPConstantes
+Return "C"
+
+Method TipoNumerico() As Character Class SPConstantes
+Return "N"
+
+Method TipoLogico() As Character Class SPConstantes
+Return "L"
+
+Method TipoData() As Character Class SPConstantes
+Return "D"
+
+Method Verdadeiro() As Character Class SPConstantes
+Return "V"
+
+Method Falso() As Character Class SPConstantes
+Return "F"
+
+Method Ativo() As Character Class SPConstantes
+Return "1"
+
+Method Inativo() As Character Class SPConstantes
+Return "0"
+
+Method EdicaoLivre() As Character Class SPConstantes
+Return "1"
+
+Method ModoAdmin() As Character Class SPConstantes
+Return "0"
+
+Method ChaveTodos() As Character Class SPConstantes
+Return "*"
+
+Method WfuOrdCodigo() As Numeric Class SPConstantes
+Return 1
+
+Method WfuOrdApelido() As Numeric Class SPConstantes
+Return 2
+
+Method WfvOrdItem() As Numeric Class SPConstantes
+Return 1
+
+Method WfvOrdChave() As Numeric Class SPConstantes
+Return 2

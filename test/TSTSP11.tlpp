@@ -1,0 +1,161 @@
+#include "totvs.ch"
+#include "TBICONN.ch"
+
+using namespace custom.superparametros.model
+
+/*/{Protheus.doc} TSTSP11
+    Testes 11 e 13 do roteiro: consulta com o parâmetro valendo (ativo e sem VLDATV falso).
+    @author Gabriel Lacerda Correia
+    @since 25/11/2026
+    @version 1.0
+/*/
+User Function TSTSP11()
+
+    Local o_SP  As Object
+    Local c_Log As Character
+
+    PREPARE ENVIRONMENT EMPRESA "99" FILIAL "01" USER "admin" PASSWORD "1234"
+
+    o_SP  := SuperParametros():New()
+    c_Log := ""
+
+    // Teste 11: GetParamValue
+    c_Log += TstConfere("GetParamValue 000099 (exceção)",       o_SP:GetParamValue("BLQARMAZEM", "000099", .F.), .F.)
+    c_Log += TstConfere("GetParamValue 000001 (pelo grupo)",    o_SP:GetParamValue("BLQARMAZEM", "000001", .F.), .T.)
+    c_Log += TstConfere("GetParamValue 000777 (fora da lista)", o_SP:GetParamValue("BLQARMAZEM", "000777", "PADRAO"), "PADRAO") // Fora da lista devolve o x_Default
+    c_Log += TstConfere("GetParamValue sem chave",              o_SP:GetParamValue("BLQARMAZEM", "", .F.),       .T.)
+    c_Log += TstConfere("GetParamValue parâmetro inexistente",  o_SP:GetParamValue("NAOEXISTE", "000099", .F.),  .F.)
+
+    // Teste 11: ValidEntityParamList
+    c_Log += TstConfere("ValidEntityParamList 000099 (exceção)",       o_SP:ValidEntityParamList("BLQARMAZEM", "000099"), .T.)
+    c_Log += TstConfere("ValidEntityParamList 000001 (pelo grupo)",    o_SP:ValidEntityParamList("BLQARMAZEM", "000001"), .T.)
+    c_Log += TstConfere("ValidEntityParamList 000777 (fora da lista)", o_SP:ValidEntityParamList("BLQARMAZEM", "000777"), .F.)
+    c_Log += TstConfere("ValidEntityParamList sem chave",              o_SP:ValidEntityParamList("BLQARMAZEM", ""),       .F.)
+
+    // Teste 13 (RN40): sem o x_Default -> mensagem de erro e Nil
+    c_Log += TstConfere("GetParamValue sem x_Default (RN40)", o_SP:GetParamValue("BLQARMAZEM", "000099"), Nil)
+
+    ConOut("[TSTSP11]" + CRLF + c_Log)
+    FWAlertInfo(c_Log, "TSTSP11")
+
+    RESET ENVIRONMENT
+
+Return
+
+/*/{Protheus.doc} TSTSP11B
+    Teste 11, parte 2: consulta com o parâmetro NÃO valendo (inativo ou com VLDATV falso).
+    Tudo deve devolver o x_Default (.F.) e o ValidEntityParamList deve devolver .F.
+    @author Gabriel Lacerda Correia
+    @since 25/11/2026
+    @version 1.0
+/*/
+User Function TSTSP11B()
+
+    Local o_SP  As Object
+    Local c_Log As Character
+
+    PREPARE ENVIRONMENT EMPRESA "99" FILIAL "01" USER "admin" PASSWORD "1234"
+
+    o_SP  := SuperParametros():New()
+    c_Log := ""
+
+    c_Log += TstConfere("GetParamValue 000099",        o_SP:GetParamValue("BLQARMAZEM", "000099", .F.), .F.)
+    c_Log += TstConfere("GetParamValue 000001",        o_SP:GetParamValue("BLQARMAZEM", "000001", .F.), .F.)
+    c_Log += TstConfere("GetParamValue sem chave",     o_SP:GetParamValue("BLQARMAZEM", "", .F.),       .F.)
+    c_Log += TstConfere("ValidEntityParamList 000001", o_SP:ValidEntityParamList("BLQARMAZEM", "000001"), .F.)
+
+    ConOut("[TSTSP11B]" + CRLF + c_Log)
+    FWAlertInfo(c_Log, "TSTSP11B")
+
+    RESET ENVIRONMENT
+
+Return
+
+/*/{Protheus.doc} TstConfere
+    Compara o valor obtido com o esperado e devolve uma linha de resultado (OK ou FALHOU).
+    @author Gabriel Lacerda Correia
+    @since 25/11/2026
+    @version 1.0
+    @param c_Caso, Character, descrição do caso testado
+    @param x_Obtido, Variant, valor devolvido pela consulta
+    @param x_Esperado, Variant, valor esperado
+    @return c_Linha, Character, linha de resultado
+/*/
+Static Function TstConfere(c_Caso As Character, x_Obtido As Variant, x_Esperado As Variant) As Character
+
+    Local l_Ok As Logical
+
+    // Mesmo tipo e mesmo valor (Nil só compara o tipo)
+    l_Ok := ValType(x_Obtido) == ValType(x_Esperado) .And. (ValType(x_Obtido) == "U" .Or. x_Obtido == x_Esperado)
+
+Return IIf(l_Ok, "OK     ", "FALHOU ") + c_Caso + " -> obtido: " + cValToChar(x_Obtido) + " / esperado: " + cValToChar(x_Esperado) + CRLF
+
+/*/{Protheus.doc} TSTSPATV
+    Expressão de ativação usada no teste 12. Gera um erro só quando a variável
+    l_TstErroAtv existe e é verdadeira (criada pelas funções do teste).
+    @author Gabriel Lacerda Correia
+    @since 25/11/2026
+    @version 1.0
+    @return l_Ret, Logical, .T. quando não está em teste
+/*/
+User Function TSTSPATV() As Logical
+
+    // Fora do teste (ex.: ao salvar o cadastro), devolve .T. e não atrapalha
+    If Type("l_TstErroAtv") == "L" .And. l_TstErroAtv
+        UserException("Erro forçado pelo teste 12 do Super Parâmetros")
+    EndIf
+
+Return .T.
+
+/*/{Protheus.doc} TSTSP12
+    Teste 12: consulta com erro no VLDATV, com tela e em job (sem tela).
+    @author Gabriel Lacerda Correia
+    @since 25/11/2026
+    @version 1.0
+/*/
+User Function TSTSP12()
+
+    Local o_SP  As Object
+    Local x_Ret As Variant
+
+    Private l_TstErroAtv := .T. // Liga o erro da U_TSTSPATV
+
+    PREPARE ENVIRONMENT EMPRESA "99" FILIAL "01" USER "admin" PASSWORD "1234"
+
+    // Com tela: deve aparecer a mensagem de erro e voltar o x_Default (.F.)
+    o_SP  := SuperParametros():New()
+    x_Ret := o_SP:GetParamValue("TSTERRATV", "", .F.)
+    FWAlertInfo("Com tela - retorno: " + cValToChar(x_Ret) + " (esperado: .F.)", "TSTSP12")
+
+    // Sem tela: a mesma consulta em job. A mensagem vai só para o console.log
+    StartJob("U_TSTSP12J", GetEnvServer(), .T., cEmpAnt, cFilAnt)
+    FWAlertInfo("Job executado. Confira o console.log do AppServer.", "TSTSP12")
+
+    RESET ENVIRONMENT
+
+Return
+
+/*/{Protheus.doc} TSTSP12J
+    Parte sem tela do teste 12 (executada em job pela U_TSTSP12).
+    @author Gabriel Lacerda Correia
+    @since 25/11/2026
+    @version 1.0
+    @param c_Emp, Character, empresa
+    @param c_Fil, Character, filial
+/*/
+User Function TSTSP12J(c_Emp As Character, c_Fil As Character)
+
+    Local o_SP  As Object
+    Local x_Ret As Variant
+
+    Private l_TstErroAtv := .T. // Liga o erro da U_TSTSPATV
+
+    RpcSetEnv(c_Emp, c_Fil) // Abre o ambiente no job
+
+    o_SP  := SuperParametros():New()
+    x_Ret := o_SP:GetParamValue("TSTERRATV", "", .F.)
+    ConOut("[TSTSP12J] Sem tela - retorno: " + cValToChar(x_Ret) + " (esperado: .F.)")
+
+    RpcClearEnv()
+
+Return

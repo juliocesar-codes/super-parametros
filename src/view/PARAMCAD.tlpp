@@ -1,0 +1,262 @@
+#Include "PROTHEUS.CH"
+#Include "FWMVCDEF.CH"
+
+// Camada de tela (view): só o browse, o menu e o MVC. As regras ficam no ParamCadService.
+Namespace custom.superparametros.view
+
+// Regras do cadastro
+Using Namespace custom.superparametros.service
+Using Namespace custom.superparametros.util
+
+#define PARAMCAD_VERSAO        "v.26112026"                   // Versão do código (v.DDMMAAAA), atualizar a cada alteração
+#define PARAMCAD_TITULO        "PARAMCAD - " + PARAMCAD_VERSAO // Título padrão das mensagens (fonte + versão)
+#define PARAMCAD_ROTINA        "custom.superparametros.view.PARAMCAD" // Nome completo da rotina (namespace + fonte), usado pelo MVC
+
+/*/{Protheus.doc} PARAMCAD
+    Cadastro de Parâmetros Customizados (MVC): WFU (parâmetro) + WFV (itens/lista).
+    Chamada: custom.superparametros.view.u_PARAMCAD()
+    ou coloque no menu pelo Configurador apontando para a User Function.
+    @author Julio César
+    @since 17/11/2026
+    @version 1.0
+/*/
+User Function PARAMCAD()
+
+    // Cria o Browse 
+
+    Local o_Browse := FWMBrowse():New()
+
+    o_Browse:SetAlias("WFU")
+    o_Browse:SetDescription("Parametros Customizados")
+    o_Browse:SetMenuDef(PARAMCAD_ROTINA) // Seleciona o menu da rotina
+    o_Browse:AddLegend("WFU_ATIVO == '1'", "GREEN", "Ativo")   // Adiciona legenda de cores para o status do parâmetro
+    o_Browse:AddLegend("WFU_ATIVO == '0'", "RED",   "Inativo")
+    o_Browse:Activate()
+Return Nil
+
+/*/{Protheus.doc} MenuDef
+    Menu da rotina PARAMCAD
+    @author Julio César
+    @since 17/11/2026
+    @version 1.0
+    @return a_Rotina, array com as opções do menu da rotina
+/*/
+User Function MenuDef() As Array
+    Local a_Rotina := {} As Array // array de opções do menu da rotina
+
+    ADD OPTION a_Rotina TITLE "Pesquisar"  ACTION "PesqBrw"                                              OPERATION 1                      ACCESS 0
+    ADD OPTION a_Rotina TITLE "Visualizar" ACTION "VIEWDEF.custom.superparametros.view.PARAMCAD" OPERATION MODEL_OPERATION_VIEW   ACCESS 0
+    ADD OPTION a_Rotina TITLE "Incluir"    ACTION "VIEWDEF.custom.superparametros.view.PARAMCAD" OPERATION MODEL_OPERATION_INSERT ACCESS 0
+    ADD OPTION a_Rotina TITLE "Alterar"    ACTION "VIEWDEF.custom.superparametros.view.PARAMCAD" OPERATION MODEL_OPERATION_UPDATE ACCESS 0
+    ADD OPTION a_Rotina TITLE "Excluir"    ACTION "VIEWDEF.custom.superparametros.view.PARAMCAD" OPERATION MODEL_OPERATION_DELETE ACCESS 0
+Return a_Rotina
+
+/*/{Protheus.doc} ModelDef
+    Modelo de dados da rotina PARAMCAD
+    @author Julio César
+    @since 17/11/2026
+    @version 1.0
+    @return o_Model, objeto do modelo de dados (MPFormModel)
+/*/
+User Function ModelDef() As Object
+    Local o_Model  := Nil As Object
+    Local o_Const  := SPConstantes():New() As Object
+
+    /*
+    
+        FWFormStruct diz para qual camada do MVC você está montando a estrutura de campos.
+        O MVC separa o modelo (os dados e as regras) da view (a tela).
+
+        Dependendo o valor do primeiro parâmetro ele trás especificções diferentes da SX3
+        que são relacionadas ao campo.
+
+        1 - Modelo
+        2 - View
+
+        Modelo puxa as informações de: é caractere de tamanho 1, tem inicializador "C", não pode ser editado.
+        Enquanto a view puxa:          o título é "Tipo Conteú.", a picture é !@ e as opções aparecem como C=Caractere;N=Numerico;....
+
+        Resumindo:
+
+            Model resgata o comportamento que o campo deve seguir
+            View  resgata os dados de visualização do campo
+
+    */
+    Local o_StrWFU := FWFormStruct(1, "WFU") 
+    Local o_StrWFV := FWFormStruct(1, "WFV")
+    Local o_Svc    := ParamCadService():New() // 
+    Local b_VldWFU := Nil // Validação do dicionário (SX3) do WFU_CONTEU, mantida junto com a validação pelo tipo
+    Local b_VldWFV := Nil // Validação do dicionário (SX3) do WFV_CONTEU, mantida junto com a validação pelo tipo
+
+    // Codigo nao pode ser alterado
+
+    // Libero somente quando for inclusão, IsInsert faz essa validação.
+
+    // Expressões (macro): liberadas na inclusão; depois, só o administrador altera
+
+    // O modo de edição nasce como Edição Livre e só o administrador muda, inclusive na inclusão.
+    // Assim o usuário comum não cria um parâmetro que ele mesmo não consegue editar depois.
+
+    // RN41: o conteúdo é validado pelo tipo assim que o usuário sai do campo com um valor diferente
+    // (o VALID do MVC só roda quando o valor muda). A validação do dicionário, se existir, continua valendo.
+    b_VldWFU := o_StrWFU:GetProperty("WFU_CONTEU", MODEL_FIELD_VALID)
+    o_StrWFU:SetProperty("WFU_CONTEU", MODEL_FIELD_VALID, {|o_Mdl, c_Campo, x_Valor, x_Arg4, x_Arg5| ;
+        (ValType(b_VldWFU) != "B" .Or. Eval(b_VldWFU, o_Mdl, c_Campo, x_Valor, x_Arg4, x_Arg5)) .And. ;
+        o_Svc:ValidaConteudo(FwFldGet("WFU_TIPO"), x_Valor)})
+
+    // RN41: trocar o tipo apaga o conteúdo padrão já digitado, que pode não combinar com o tipo novo
+
+    // RN41: o conteúdo do item também é validado pelo tipo do parâmetro ao sair do campo.
+    // Linha de grupo (conteúdo vazio) passa aqui; a regra de grupo continua no LinOkWFV.
+    b_VldWFV := o_StrWFV:GetProperty("WFV_CONTEU", MODEL_FIELD_VALID)
+    o_StrWFV:SetProperty("WFV_CONTEU", MODEL_FIELD_VALID, {|o_Grid, c_Campo, x_Valor, n_Linha, x_Antigo| ;
+        (ValType(b_VldWFV) != "B" .Or. Eval(b_VldWFV, o_Grid, c_Campo, x_Valor, n_Linha, x_Antigo)) .And. ;
+        o_Svc:ValidaConteudo(FwFldGet("WFU_TIPO"), x_Valor)})
+
+    // Linha nova do grid nasce com a filial logada
+    o_StrWFV:SetProperty("WFV_FILIAL", MODEL_FIELD_INIT, {|| xFilial("WFV")})
+
+    // Apelido do grupo (campo virtual): linha nova nasce vazia. As linhas gravadas são preenchidas no SetActivate
+    o_StrWFV:SetProperty("WFV_DESGRP", MODEL_FIELD_INIT, {|| ""})
+
+    // Gatilho: ao informar o parâmetro grupo (WFV_IDPAR), mostra o apelido dele ao lado (WFV_DESGRP)
+
+    // Garante a geracao automatica do codigo via GetSXENum caso o SX3 nao tenha inicializador
+
+    // Isso cria o modelo e já diz o que ele deve executar em cada momento da vida 
+    // da tela. Cada argumento é um bloco de código, um pedaço de código guardado 
+    // para ser executado depois, na hora certa.
+
+    /*
+    
+        o_Model := MPFormModel():New(Nome do modelo, bPre, bPost, bCommit, bCancel)
+
+        bPre    := Antes de abrir a tela, ao montar o modelo
+        bPost   := Quando o usuário clica em Confirmar, antes de gravar. É o último filtro
+        bCommit := Depois que a validação passou e o MVC vai gravar
+        bCancel := Quando o usuário cancela a tela
+
+    */
+
+    o_Model := MPFormModel():New("MPARAMCAD", ;
+                                /*bPre*/, ;
+                                {|o_Mdl| o_Svc:PosValidWFU(o_Mdl)}, ;
+                                {|o_Mdl| o_Svc:Grava(o_Mdl)}, ;
+                                {|o_Mdl| o_Svc:Cancela(o_Mdl)})
+
+
+    // Adiciona os campos em um modelo novo
+    o_Model:AddFields("WFUMASTER", /*cOwner*/, o_StrWFU)
+
+    // Monta o Grid dos itens
+
+    /*
+    
+	cId	        ID do grid
+	cOwner	    ID do componente pai
+	oStruct	    Estrutura de campos
+	bLinePre	Pré-validação da linha, executada antes de agir sobre ela
+	bLinePost	Validação da linha, executada ao sair dela
+	bPre	    Pré-validação do grid inteiro
+	bPost	    Pós-validação do grid inteiro
+	bLoad	    Bloco que carrega as linhas por conta própria, em vez do SetRelation
+    
+    */
+
+    o_Model:AddGrid("WFVDETAIL", "WFUMASTER", o_StrWFV, ;
+                    {|o_Grid, n_Linha, c_Acao| o_Svc:PreLinhaWFV(o_Grid, n_Linha, c_Acao)}, /*/ Pré-Validação /*/;
+                    {|o_Grid| o_Svc:LinOkWFV(o_Grid)} /*/ Validação total da linha /*/)
+
+    // Liga o Grid ao cabeçalho
+
+    /*
+
+        O AddGrid só disse que o WFVDETAIL é filho do WFUMASTER. O SetRelation explica como os registros se casam:
+
+        "WFVDETAIL"	O grid que está sendo ligado.
+        {{"WFV_FILIAL", "xFilial('WFV')"}, {"WFV_CODPAR", "WFU_COD"}}	Os pares campo do filho = valor do pai.
+        WFV->(IndexKey(...))	                                        A chave do índice que o MVC usa para achar os itens.
+
+        WFV_FILIAL = xFilial('WFV'): o item precisa ser da filial do usuário. O valor vai entre aspas porque 
+        é uma expressão que o MVC calcula depois.
+
+        WFV_CODPAR = WFU_COD: o código do parâmetro gravado no item precisa ser igual ao código do cabeçalho.
+
+    */
+
+    o_Model:SetRelation("WFVDETAIL", {{"WFV_FILIAL", "xFilial('WFV')"}, {"WFV_CODPAR", "WFU_COD"}}, WFV->(IndexKey(o_Const:WfvOrdItem())))
+    o_Model:GetModel("WFVDETAIL"):SetOptional(.T.)
+
+    // Linha única pela chave + grupo: linhas de chave não repetem a chave e linhas de grupo não repetem o grupo
+    o_Model:GetModel("WFVDETAIL"):SetUniqueLine({"WFV_CHBUSC", "WFV_IDPAR"})
+
+    // Antes de abrir a tela: confere o modo de edição (bloqueia alterar/excluir em Modo Admin para quem não é administrador)
+    o_Model:SetVldActivate({|o_Mdl| o_Svc:ValidaModoEdicao(o_Mdl)})
+
+    // Ao abrir a tela: preenche o apelido do grupo (campo virtual) nas linhas já gravadas
+    o_Model:SetActivate({|o_Mdl| o_Svc:CarregaApelidosGrupo(o_Mdl)})
+
+
+
+    o_Model:SetPrimaryKey({"WFU_FILIAL", "WFU_COD"})
+    o_Model:SetDescription("Parametros Customizados")
+    o_Model:GetModel("WFUMASTER"):SetDescription("Parametro")
+    o_Model:GetModel("WFVDETAIL"):SetDescription("Itens do parametro")
+Return o_Model
+
+/*/{Protheus.doc} ViewDef
+    View da rotina PARAMCAD
+    @author Julio César
+    @since 17/11/2026
+    @version 1.0
+    @return o_View, objeto da interface (FWFormView)
+/*/
+User Function ViewDef() As Object
+    
+    //Carrega o modelo
+    Local o_Model  := FWLoadModel(PARAMCAD_ROTINA)
+    
+    // Pega a estrutura de visualização dos campos (2)
+    Local o_StrWFU := FWFormStruct(2, "WFU") 
+    Local o_StrWFV := FWFormStruct(2, "WFV")
+    
+    // Cria a tela
+    Local o_View   := FWFormView():New()
+
+    // Liga a camada de modelagem com a tela
+    o_View:SetModel(o_Model)
+
+    // Adiciona os campos e o grid
+    o_View:AddField("VIEW_WFU", o_StrWFU, "WFUMASTER")
+    o_View:AddGrid("VIEW_WFV",  o_StrWFV, "WFVDETAIL")
+
+    // Cria duas "caixas" na horizontal na tela, uma superior e outra inferior
+    o_View:CreateHorizontalBox("SUPERIOR", 55)
+    o_View:CreateHorizontalBox("INFERIOR", 45)
+
+    // Atribui quem vai ser o dono de qual metade
+    o_View:SetOwnerView("VIEW_WFU", "SUPERIOR")
+    o_View:SetOwnerView("VIEW_WFV", "INFERIOR")
+
+    // Adiciona titulo em cada uma das caixas
+    o_View:EnableTitleView("VIEW_WFU", "Parametro")
+    o_View:EnableTitleView("VIEW_WFV", "Itens (exceções e grupos, opcional)")
+
+    // Numera o WFV_ITEM automaticamente a cada nova linha
+    o_View:AddIncrementField("VIEW_WFV", "WFV_ITEM")
+
+Return o_View
+
+/*/{Protheus.doc} T67Param
+    Função auxiliar de teste / chamada direta da inclusão
+    @author Julio César
+    @since 17/11/2026
+    @version 1.0
+/*/
+User Function T67Param()
+    Local b_Old := ErrorBlock({|o_Erro| ConOut("[" + PARAMCAD_TITULO + "] Erro interno: " + o_Erro:Description + CRLF + o_Erro:ErrorStack), Break(o_Erro)})
+    Begin Sequence
+        FWExecView("Incluir", PARAMCAD_ROTINA, MODEL_OPERATION_INSERT)
+    End Sequence
+    ErrorBlock(b_Old)
+Return

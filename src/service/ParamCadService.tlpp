@@ -1,0 +1,673 @@
+#Include "PROTHEUS.CH"
+#Include "FWMVCDEF.CH"
+
+// Camada de serviço: regras de negócio do cadastro (usada pela tela PARAMCAD)
+Namespace custom.superparametros.service
+
+Using Namespace custom.superparametros.repository // Acesso a dados (ParamRepository)
+Using Namespace custom.superparametros.util       // Expressões (ExpressionRunner) e mensagens (ParamMessage)
+
+#define PARAMCADSERVICE_VERSAO "v.26112026"                                  // Versão do código (v.DDMMAAAA), atualizar a cada alteração
+#define PARAMCADSERVICE_TITULO "PARAMCADSERVICE - " + PARAMCADSERVICE_VERSAO // Título padrão das mensagens (fonte + versão)
+
+/*/{Protheus.doc} ParamCadService
+    Classe de serviço com as regras de negócio do cadastro de parâmetros customizados.
+    @author Julio César
+    @since 18/11/2026
+    @version 1.0
+/*/
+Class ParamCadService
+
+    // Camadas usadas pelo serviço (criadas no construtor)
+    Public Data o_Repo As Object // Acesso a dados da WFU e da WFV (ParamRepository)
+    Public Data o_Expr As Object // Execução protegida das expressões (ExpressionRunner)
+    Public Data o_Msg  As Object // Exibição das mensagens (ParamMessage)
+    Private Data o_Const As Object
+
+    // Construtor da classe
+    Public Method New()
+
+    // Verifica se a operação do modelo ativo é de inclusão (usado no WHEN do apelido)
+    Public Method IsInsert() As Logical
+
+    // Validações do cadastro
+    Public Method PosValidWFU(o_Model As Object) As Logical                                // Valida o cabeçalho (WFU) ao confirmar a tela
+    Public Method LinOkWFV(o_Grid As Object) As Logical                                    // Valida a linha do grid (WFV) ao sair dela
+    Public Method ValidaConteudo(c_Tipo As Character, c_Conteudo As Character) As Logical  // Valida se o conteúdo combina com o tipo do parâmetro
+    Public Method IsDataBR(c_Texto As Character) As Logical                                // Verifica se o texto é uma data existente em DD/MM/AAAA
+    Public Method IsNumero(c_Texto As Character) As Logical                                // Verifica se o texto é um número (inteiro ou decimal com ponto)
+
+    // Controle por filial
+    Public Method ChecaFilialItem(c_FilItem As Character, c_Item As Character, c_Param As Character, c_Verbo As Character) As Logical // Bloqueia a ação em item de outra filial
+    Public Method PreLinhaWFV(o_Grid As Object, n_Linha As Numeric, c_Acao As Character) As Logical                                  // Pré-validação do grid: bloqueia alterar/excluir item de outra filial
+    Public Method ChecaExclusaoParametro(c_Cod As Character, c_Param As Character) As Logical                                        // Bloqueia excluir o parâmetro se existir item de outra filial
+
+    // Modo de edição
+    Public Method ValidaModoEdicao(o_Model As Object) As Logical // Bloqueia alterar/excluir parâmetro em Modo Admin para quem não é administrador
+
+    // Expressões (macro)
+    Public Method ValidaAtivacaoCadastro(c_Apelido As Character, c_Expressao As Character) As Logical             // Testa a expressão do WFU_VLDATV ao salvar
+    Public Method ValidaChaveItem(c_Expressao As Character, c_Chave As Character, c_Item As Character) As Logical // Valida a chave de busca pela expressão do WFU_VLDITE
+
+    // Grupos (WFV_IDPAR)
+    Public Method ValidaLinhaGrupo(o_MdlWFU As Object, c_Grupo As Character, c_Conteudo As Character, c_Item As Character) As Logical // Valida a linha de grupo do grid
+    Public Method ChecaUsoComoGrupo(c_Cod As Character, c_Param As Character, c_Verbo As Character) As Logical                        // Bloqueia excluir/inativar parâmetro usado como grupo
+    Public Method ApelidoDoParametro(c_Codigo As Character) As Character                                                              // Apelido (WFU_ALIAS) do parâmetro pelo código (gatilho do WFV_IDPAR)
+    Public Method CarregaApelidosGrupo(o_Model As Object) As Logical                                                                  // Preenche o WFV_DESGRP das linhas gravadas ao abrir a tela
+
+    // Gravação e cancelamento
+    Public Method Grava(o_Model As Object) As Logical   // Commit do modelo + confirma o número reservado
+    Public Method Cancela(o_Model As Object) As Logical // Cancel do modelo + devolve o número reservado
+EndClass
+
+/*/{Protheus.doc} New
+    Construtor da classe ParamCadService: cria as camadas usadas pelo serviço.
+    @author Julio César
+    @since 18/11/2026
+    @version 1.1
+    @return Self, instância da classe
+/*/
+Method New() Class ParamCadService
+    ::o_Repo := ParamRepository():New()  // Acesso a dados
+    ::o_Expr := ExpressionRunner():New() // Execução das expressões
+    ::o_Msg  := ParamMessage():New()     // Mensagens
+    ::o_Const := SPConstantes():New()
+Return Self
+
+/*/{Protheus.doc} IsInsert
+    Verifica se a operação atual do modelo ativo é de inclusão
+    @author Julio César
+    @since 18/11/2026
+    @version 1.0
+    @return l_Ret, .T. se o modelo ativo está em operação de inclusão
+/*/
+Method IsInsert() As Logical Class ParamCadService
+    Local o_Model := FWModelActive() // Modelo que está ativo na tela
+
+    // Só retorna .T. se o modelo existe (objeto) e a operação é de inclusão
+Return ValType(o_Model) == "O" .And. o_Model:GetOperation() == MODEL_OPERATION_INSERT
+
+/*/{Protheus.doc} PosValidWFU
+    Validação pós do cabeçalho WFU
+    @author Julio César
+    @since 18/11/2026
+    @version 1.0
+    @param o_Model, Objeto, modelo de dados da rotina
+    @return l_Ret, .T. se o cabeçalho é válido
+/*/
+Method PosValidWFU(o_Model As Object) As Logical Class ParamCadService
+    Local l_Ret      := .T.
+    Local o_MdlWFU   := o_Model:GetModel("WFUMASTER") // Cabeçalho (WFU) dentro do modelo
+    Local n_Oper     := o_Model:GetOperation()        // Operação atual (incluir, alterar, excluir...)
+    Local c_Apelido  := ""
+    Local c_Tipo     := ""
+    Local c_Conteudo := ""
+    Local c_Ativo    := ""
+    Local c_VldAtv   := ""
+
+    // Na exclusão não há o que validar no cadastro, só as dependências do parâmetro
+    If n_Oper == MODEL_OPERATION_DELETE
+
+        // Não pode excluir parâmetro usado como grupo em outro parâmetro
+        If !::ChecaUsoComoGrupo(o_MdlWFU:GetValue("WFU_COD"), o_MdlWFU:GetValue("WFU_ALIAS"), "excluir")
+            Return .F.
+        EndIf
+
+        // Não pode excluir parâmetro com itens de outras filiais
+        Return ::ChecaExclusaoParametro(o_MdlWFU:GetValue("WFU_COD"), o_MdlWFU:GetValue("WFU_ALIAS"))
+    EndIf
+
+    // Lê o que foi digitado no cabeçalho
+    c_Apelido  := Upper(AllTrim(o_MdlWFU:GetValue("WFU_ALIAS")))
+    c_Tipo     := o_MdlWFU:GetValue("WFU_TIPO")
+    c_Conteudo := AllTrim(o_MdlWFU:GetValue("WFU_CONTEU"))
+    c_Ativo    := o_MdlWFU:GetValue("WFU_ATIVO")
+    c_VldAtv   := AllTrim(o_MdlWFU:GetValue("WFU_VLDATV"))
+
+    // O apelido é obrigatório
+    If Empty(c_Apelido)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O apelido do parâmetro não foi informado." + CRLF + "Tipo: erro do usuário.", "Informe o apelido do parâmetro.")
+        Return .F.
+    EndIf
+
+    // O apelido não pode ter espaço
+    If " " $ c_Apelido
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O apelido [" + c_Apelido + "] contém espaços." + CRLF + "Tipo: erro do usuário.", "Use letras, números e underline, sem espaços (ex.: GR_BLQCQ).")
+        Return .F.
+    EndIf
+
+    // Só na inclusão: confere se já existe outro parâmetro com o mesmo apelido
+    If n_Oper == MODEL_OPERATION_INSERT .And. ::o_Repo:ApelidoEmUso(c_Apelido)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "Já existe um parâmetro com o apelido " + c_Apelido + "." + CRLF + "Tipo: erro do usuário.", "Escolha outro apelido ou altere o parâmetro existente.")
+        Return .F.
+    EndIf
+
+    // Confere se o conteúdo padrão combina com o tipo do parâmetro
+    If !::ValidaConteudo(c_Tipo, c_Conteudo)
+        Return .F.
+    EndIf
+
+    // Na alteração, não pode inativar parâmetro usado como grupo em outro parâmetro
+    If n_Oper == MODEL_OPERATION_UPDATE .And. c_Ativo == ::o_Const:Inativo()
+        If !::ChecaUsoComoGrupo(o_MdlWFU:GetValue("WFU_COD"), c_Apelido, "inativar")
+            Return .F.
+        EndIf
+    EndIf
+
+    // Se houver validação de ativação, testa a expressão antes de gravar
+    If !Empty(c_VldAtv) .And. !::ValidaAtivacaoCadastro(c_Apelido, c_VldAtv)
+        Return .F.
+    EndIf
+
+Return l_Ret
+
+/*/{Protheus.doc} LinOkWFV
+    Validação de linha do grid WFV.
+    A linha tem OU chave de busca OU parâmetro grupo. Linha de chave passa pela validação
+    do item (WFU_VLDITE) e pelo tipo; linha de grupo passa pelas regras de grupo.
+    @author Julio César
+    @since 18/11/2026
+    @version 1.0
+    @param o_Grid, Objeto, grid de itens (WFVDETAIL)
+    @return l_Ret, .T. se a linha é válida
+/*/
+Method LinOkWFV(o_Grid As Object) As Logical Class ParamCadService
+    Local l_Ret      := .T.
+    Local o_MdlAtivo := Nil
+    Local o_MdlWFU   := Nil
+    Local c_TipoWFU  := ""
+    Local c_VldIte   := ""
+    Local c_Item     := ""
+    Local c_Chave    := ""
+    Local c_Grupo    := ""
+    Local c_Conteudo := ""
+
+    // Linha excluída não precisa ser validada
+    If o_Grid:IsDeleted()
+        Return .T.
+    EndIf
+
+    // FWModelActive é função (não classe), por isso o GetModel fica em outra linha
+    o_MdlAtivo := FWModelActive()                  // Modelo que está ativo na tela
+    o_MdlWFU   := o_MdlAtivo:GetModel("WFUMASTER") // Cabeçalho (WFU)
+    c_TipoWFU  := o_MdlWFU:GetValue("WFU_TIPO")    // Tipo do parâmetro (C, N, L ou D)
+    c_VldIte   := AllTrim(o_MdlWFU:GetValue("WFU_VLDITE")) // Expressão de validação do item
+
+    // Lê a linha
+    c_Item     := AllTrim(o_Grid:GetValue("WFV_ITEM"))
+    c_Chave    := AllTrim(o_Grid:GetValue("WFV_CHBUSC"))
+    c_Grupo    := AllTrim(o_Grid:GetValue("WFV_IDPAR"))
+    c_Conteudo := AllTrim(o_Grid:GetValue("WFV_CONTEU"))
+
+    // A linha precisa ter a chave de busca ou o parâmetro grupo
+    If Empty(c_Chave) .And. Empty(c_Grupo)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O item " + c_Item + " não tem chave de busca nem parâmetro grupo." + CRLF + "Tipo: erro do usuário.", "Informe a chave de busca (exceção) ou o parâmetro grupo, ou apague a linha.")
+        Return .F.
+    EndIf
+
+    // ... mas nunca os dois ao mesmo tempo
+    If !Empty(c_Chave) .And. !Empty(c_Grupo)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O item " + c_Item + " tem chave de busca e parâmetro grupo ao mesmo tempo." + CRLF + "Tipo: erro do usuário.", "Deixe só um: a chave de busca (exceção) ou o parâmetro grupo.")
+        Return .F.
+    EndIf
+
+    // Linha de grupo: segue as regras de grupo
+    If !Empty(c_Grupo)
+        Return ::ValidaLinhaGrupo(o_MdlWFU, c_Grupo, c_Conteudo, c_Item)
+    EndIf
+
+    // Linha de chave: valida a chave pela expressão do parâmetro ("*" vale para todas, não é validada)
+    If !Empty(c_VldIte) .And. c_Chave != ::o_Const:ChaveTodos()
+        If !::ValidaChaveItem(c_VldIte, c_Chave, c_Item)
+            Return .F.
+        EndIf
+    EndIf
+
+    // Conteúdo vazio é permitido (usa o conteúdo padrão da WFU); preenchido, precisa combinar com o tipo
+    l_Ret      := ::ValidaConteudo(c_TipoWFU, c_Conteudo)
+Return l_Ret
+
+/*/{Protheus.doc} ValidaConteudo
+    Valida se o conteúdo informado corresponde ao tipo do parâmetro.
+    Usado pelo cabeçalho (WFU_CONTEU) e pelos itens (WFV_CONTEU).
+    Lógico: V (verdadeiro) ou F (falso).
+    @author Julio César
+    @since 19/11/2026
+    @version 1.1
+    @param c_Tipo, character, tipo do parâmetro (C, N, L ou D)
+    @param c_Conteudo, character, conteúdo digitado
+    @return l_Ret, .T. se o conteúdo está vazio ou é válido para o tipo
+/*/
+Method ValidaConteudo(c_Tipo As Character, c_Conteudo As Character) As Logical Class ParamCadService
+    Local c_Texto := AllTrim(c_Conteudo)
+    Local c_Erro  := ""
+    Local c_Ajuda := ""
+
+    // Conteudo vazio e decidido por quem chama (WFU pode ser vazio, WFV nao)
+    If Empty(c_Texto)
+        Return .T.
+    EndIf
+
+    // Cada tipo tem a sua regra de formato. O tipo Caractere aceita qualquer texto
+    Do Case
+    Case c_Tipo == "L" // Lógico
+        // Aceita V (verdadeiro) ou F (falso), em maiúscula ou minúscula
+        If aScan({"V", "F"}, Upper(c_Texto)) == 0
+            c_Erro  := "O conteúdo [" + c_Texto + "] não é válido para o tipo Lógico."
+            c_Ajuda := "Informe V (verdadeiro) ou F (falso)."
+        EndIf
+
+    Case c_Tipo == "D" // Data (DD/MM/AAAA)
+        If !::IsDataBR(c_Texto)
+            c_Erro  := "O conteúdo [" + c_Texto + "] não é uma data válida para o tipo Data."
+            c_Ajuda := "Use o formato DD/MM/AAAA, com uma data existente (ex.: 17/11/2026)."
+        EndIf
+
+    Case c_Tipo == "N" // Numérico
+        If !::IsNumero(c_Texto)
+            c_Erro  := "O conteúdo [" + c_Texto + "] não é um número válido para o tipo Numérico."
+            c_Ajuda := "Informe um número, usando ponto como separador decimal (ex.: 12.5)."
+        EndIf
+    EndCase
+
+    // Se algum tipo falhou, mostra a mensagem de ajuda e barra
+    If !Empty(c_Erro)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, c_Erro + CRLF + "Tipo: erro do usuário.", c_Ajuda)
+        Return .F.
+    EndIf
+Return .T.
+
+/*/{Protheus.doc} IsDataBR
+    Verifica se o texto é uma data existente no formato DD/MM/AAAA.
+    @author Julio César
+    @since 19/11/2026
+    @version 1.0
+    @param c_Texto, character, texto a validar (ex.: 17/11/2026)
+    @return l_Ret, .T. se o formato e a data são válidos (rejeita 31/02/2026)
+/*/
+Method IsDataBR(c_Texto As Character) As Logical Class ParamCadService
+    Local c_Ymd := ""
+
+    // A data precisa ter 10 caracteres e as barras nas posições 3 e 6 (DD/MM/AAAA)
+    If Len(c_Texto) != 10 .Or. SubStr(c_Texto, 3, 1) != "/" .Or. SubStr(c_Texto, 6, 1) != "/"
+        Return .F.
+    EndIf
+
+    // Monta AAAAMMDD para nao depender do SET DATE da sessao
+    c_Ymd := SubStr(c_Texto, 7, 4) + SubStr(c_Texto, 4, 2) + SubStr(c_Texto, 1, 2)
+
+    // StoD devolve data vazia quando a data não existe (ex.: 31/02)
+Return !Empty(StoD(c_Ymd))
+
+/*/{Protheus.doc} IsNumero
+    Verifica se o texto é um número inteiro ou decimal (ponto como separador).
+    @author Julio César
+    @since 19/11/2026
+    @version 1.0
+    @param c_Texto, character, texto a validar (ex.: 5, -3, 12.5)
+    @return l_Ret, .T. se o texto é numérico
+/*/
+Method IsNumero(c_Texto As Character) As Logical Class ParamCadService
+    Local c_Sem := c_Texto // Trabalha numa cópia, o texto original não é alterado
+    Local n_Pos := 0
+    Local n_I   := 0
+
+    // Sinal negativo so e aceito na primeira posicao
+    If Left(c_Sem, 1) == "-"
+        c_Sem := SubStr(c_Sem, 2)
+    EndIf
+
+    // Aceita no maximo um ponto decimal
+    n_Pos := At(".", c_Sem)
+    If n_Pos > 0
+        c_Sem := Stuff(c_Sem, n_Pos, 1, "")
+    EndIf
+
+    // Se não sobrou nada (ex.: só "-" ou "."), não é número
+    If Empty(c_Sem)
+        Return .F.
+    EndIf
+
+    // Os caracteres que sobraram precisam ser todos dígitos
+    For n_I := 1 To Len(c_Sem)
+        If !IsDigit(SubStr(c_Sem, n_I, 1))
+            Return .F.
+        EndIf
+    Next
+Return .T.
+
+/*/{Protheus.doc} ChecaFilialItem
+    Bloqueia a ação quando o item pertence a outra filial que não a do usuário.
+    Em WFV compartilhada o WFV_FILIAL é vazio, igual ao xFilial, então nunca bloqueia.
+    @author Julio César
+    @since 19/11/2026
+    @version 1.0
+    @param c_FilItem, character, filial gravada no item (WFV_FILIAL)
+    @param c_Item, character, número do item (WFV_ITEM)
+    @param c_Param, character, apelido do parâmetro (WFU_ALIAS)
+    @param c_Verbo, character, ação bloqueada ("excluir" ou "alterar")
+    @return l_Ret, .T. se o item é da filial do usuário
+/*/
+Method ChecaFilialItem(c_FilItem As Character, c_Item As Character, c_Param As Character, c_Verbo As Character) As Logical Class ParamCadService
+    Local c_Msg := ""
+
+    // Vazio = linha ainda nao gravada (nova) ou WFV compartilhada
+    If Empty(c_FilItem) .Or. c_FilItem == xFilial("WFV")
+        Return .T.
+    EndIf
+
+    // Monta a mensagem de bloqueio: o que aconteceu, o motivo, o tipo do erro e a função (a versão vai no título)
+    c_Msg := "Você não tem permissão para " + c_Verbo + " o item " + AllTrim(c_Item) + " do parâmetro " + AllTrim(c_Param) + "." + CRLF
+    c_Msg += "Motivo: o item pertence à filial " + AllTrim(c_FilItem) + " e você está na filial " + AllTrim(cFilAnt) + "." + CRLF
+    c_Msg += "Por favor, contate o departamento de T.I." + CRLF + CRLF
+    c_Msg += "Tipo: erro do usuário (permissão)." + CRLF
+    c_Msg += "Função: ParamCadService.ChecaFilialItem"
+
+    // Mostra o alerta (e registra no log) e bloqueia a ação
+    ::o_Msg:ShowError(PARAMCADSERVICE_TITULO, c_Msg)
+Return .F.
+
+/*/{Protheus.doc} PreLinhaWFV
+    Pré-validação da linha do grid WFV: bloqueia alterar ou excluir item de outra filial.
+    @author Julio César
+    @since 19/11/2026
+    @version 1.0
+    @param o_Grid, Objeto, grid de itens (WFVDETAIL)
+    @param n_Linha, numeric, linha do grid que está sendo manipulada
+    @param c_Acao, character, ação do grid (DELETE, SETVALUE, etc.)
+    @return l_Ret, .T. se a ação é permitida
+/*/
+Method PreLinhaWFV(o_Grid As Object, n_Linha As Numeric, c_Acao As Character) As Logical Class ParamCadService
+    Local c_Verbo    := ""
+    Local c_Param    := ""
+    Local o_MdlAtivo := Nil
+    Local o_MdlWFU   := Nil
+
+    // Só interessa excluir ou alterar a linha, as outras ações são liberadas
+    Do Case
+    Case c_Acao == "DELETE"
+        c_Verbo := "excluir"
+    Case c_Acao == "SETVALUE"
+        c_Verbo := "alterar"
+    Otherwise
+        Return .T.
+    EndCase
+
+    // Busca o apelido do parâmetro no cabeçalho, ele aparece na mensagem de bloqueio
+    o_MdlAtivo := FWModelActive()
+    o_MdlWFU   := o_MdlAtivo:GetModel("WFUMASTER")
+    c_Param    := o_MdlWFU:GetValue("WFU_ALIAS")
+
+    // Confere se o item é da filial do usuário
+Return ::ChecaFilialItem(o_Grid:GetValue("WFV_FILIAL", n_Linha), o_Grid:GetValue("WFV_ITEM", n_Linha), c_Param, c_Verbo)
+
+/*/{Protheus.doc} ChecaExclusaoParametro
+    Na exclusão do parâmetro, bloqueia se existir item de outra filial (mesmo que a tela não o exiba).
+    @author Julio César
+    @since 19/11/2026
+    @version 1.1
+    @param c_Cod, character, código do parâmetro (WFU_COD)
+    @param c_Param, character, apelido do parâmetro (WFU_ALIAS)
+    @return l_Ret, .T. se todos os itens são da filial do usuário
+/*/
+Method ChecaExclusaoParametro(c_Cod As Character, c_Param As Character) As Logical Class ParamCadService
+    Local c_FilItem := ""
+    Local c_Item    := ""
+
+    // Procura item desse parâmetro em outra filial (a busca fica no repositório)
+    ::o_Repo:ItemEmOutraFilial(c_Cod, @c_FilItem, @c_Item)
+
+    // Se achou item de outra filial, bloqueia a exclusão do parâmetro
+Return ::ChecaFilialItem(c_FilItem, c_Item, c_Param, "excluir")
+
+/*/{Protheus.doc} ValidaModoEdicao
+    Antes de abrir a tela, bloqueia alterar ou excluir parâmetro em Modo Admin para quem
+    não é administrador. Em Edição Livre todos podem, respeitando as demais regras.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param o_Model, Objeto, modelo de dados da rotina (a WFU está posicionada no registro do browse)
+    @return l_Ret, .T. se o usuário pode executar a operação
+/*/
+Method ValidaModoEdicao(o_Model As Object) As Logical Class ParamCadService
+    Local n_Oper  := o_Model:GetOperation() // Operação escolhida no menu
+    Local c_Verbo := ""
+
+    // Só alterar e excluir dependem do modo de edição
+    Do Case
+    Case n_Oper == MODEL_OPERATION_UPDATE
+        c_Verbo := "alterar"
+    Case n_Oper == MODEL_OPERATION_DELETE
+        c_Verbo := "excluir"
+    Otherwise
+        Return .T.
+    EndCase
+
+    // Edição Livre ou usuário administrador: liberado
+    If WFU->WFU_MODEDI != ::o_Const:ModoAdmin() .Or. FWIsAdmin()
+        Return .T.
+    EndIf
+
+    ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "Você não tem permissão para " + c_Verbo + " o parâmetro " + AllTrim(WFU->WFU_ALIAS) + "." + CRLF + "Motivo: o parâmetro está em Modo Admin, e só administradores podem alterá-lo ou excluí-lo." + CRLF + "Tipo: erro do usuário (permissão).", "Solicite a alteração a um administrador do sistema.")
+Return .F.
+
+/*/{Protheus.doc} ValidaAtivacaoCadastro
+    Ao salvar, testa a expressão da validação de ativação (WFU_VLDATV): ela precisa
+    executar sem erro e devolver verdadeiro ou falso.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param c_Apelido, Character, apelido do parâmetro (para a mensagem)
+    @param c_Expressao, Character, expressão digitada no WFU_VLDATV
+    @return l_Ret, .T. se a expressão é válida
+/*/
+Method ValidaAtivacaoCadastro(c_Apelido As Character, c_Expressao As Character) As Logical Class ParamCadService
+    Local x_Resultado := Nil
+    Local c_Erro      := ""
+
+    // A expressão não pode dar erro
+    If !::o_Expr:Run(c_Expressao, @x_Resultado, @c_Erro)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "A validação de ativação (WFU_VLDATV) do parâmetro " + c_Apelido + " executou o comando " + c_Expressao + ", que resultou em um erro: " + c_Erro + CRLF + "Tipo: erro do usuário.", "Corrija a expressão. Ela precisa devolver verdadeiro ou falso (ex.: Day(dDataBase) != 31).")
+        Return .F.
+    EndIf
+
+    // ... e precisa devolver verdadeiro ou falso
+    If ValType(x_Resultado) != "L"
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "A validação de ativação (WFU_VLDATV) do parâmetro " + c_Apelido + " não devolveu verdadeiro ou falso (devolveu o tipo " + ValType(x_Resultado) + ")." + CRLF + "Comando: " + c_Expressao + CRLF + "Tipo: erro do usuário.", "Use uma expressão lógica (ex.: Day(dDataBase) != 31).")
+        Return .F.
+    EndIf
+Return .T.
+
+/*/{Protheus.doc} ValidaChaveItem
+    Valida a chave de busca da linha pela expressão do parâmetro (WFU_VLDITE).
+    A expressão lê a chave com FwFldGet("WFV_CHBUSC").
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param c_Expressao, Character, expressão do WFU_VLDITE
+    @param c_Chave, Character, chave de busca digitada (para a mensagem)
+    @param c_Item, Character, número do item (para a mensagem)
+    @return l_Ret, .T. se a chave foi aceita
+/*/
+Method ValidaChaveItem(c_Expressao As Character, c_Chave As Character, c_Item As Character) As Logical Class ParamCadService
+    Local x_Resultado := Nil
+    Local c_Erro      := ""
+    Local c_Msg       := ""
+
+    // Erro ou retorno não lógico: problema na expressão cadastrada, não na chave digitada
+    If !::o_Expr:Run(c_Expressao, @x_Resultado, @c_Erro) .Or. ValType(x_Resultado) != "L"
+        If Empty(c_Erro)
+            c_Erro := "a expressão não devolveu verdadeiro ou falso (devolveu o tipo " + ValType(x_Resultado) + ")"
+        EndIf
+        c_Msg := "A validação do item (WFU_VLDITE) executou o seguinte comando: " + c_Expressao + ", que resultou em um erro: " + c_Erro + "." + CRLF
+        c_Msg += "Contate um dos administradores do sistema." + CRLF + CRLF
+        c_Msg += "Tipo: erro interno." + CRLF
+        c_Msg += "Função: ParamCadService.ValidaChaveItem"
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, c_Msg, "Peça a um administrador para corrigir a validação do item no parâmetro.")
+        Return .F.
+    EndIf
+
+    // A expressão recusou a chave
+    If !x_Resultado
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "A chave de busca [" + c_Chave + "] do item " + c_Item + " não foi aceita pela validação do parâmetro." + CRLF + "Validação: " + c_Expressao + CRLF + "Tipo: erro do usuário.", "Informe uma chave de busca válida para este parâmetro.")
+        Return .F.
+    EndIf
+Return .T.
+
+/*/{Protheus.doc} ValidaLinhaGrupo
+    Valida a linha de grupo (WFV_IDPAR preenchido): sem conteúdo, o grupo existe, não é o
+    próprio parâmetro, está ativo e não existe grupo dentro de grupo.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param o_MdlWFU, Objeto, cabeçalho (WFUMASTER) do parâmetro que está sendo editado
+    @param c_Grupo, Character, código do parâmetro grupo (WFV_IDPAR)
+    @param c_Conteudo, Character, conteúdo da linha (WFV_CONTEU)
+    @param c_Item, Character, número do item (para a mensagem)
+    @return l_Ret, .T. se a linha de grupo é válida
+/*/
+Method ValidaLinhaGrupo(o_MdlWFU As Object, c_Grupo As Character, c_Conteudo As Character, c_Item As Character) As Logical Class ParamCadService
+    Local c_CodAtual   := AllTrim(o_MdlWFU:GetValue("WFU_COD"))   // Parâmetro que está sendo editado
+    Local c_ApelAtual  := AllTrim(o_MdlWFU:GetValue("WFU_ALIAS"))
+    Local c_ApelGrupo  := ""
+    Local c_AtivoGrupo := ""
+    Local c_Usado      := ""
+
+    // A linha de grupo não tem conteúdo: quem está no grupo recebe o conteúdo padrão do parâmetro
+    If !Empty(c_Conteudo)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O item " + c_Item + " é uma linha de grupo e não pode ter conteúdo." + CRLF + "Tipo: erro do usuário.", "Apague o conteúdo da linha. Quem está no grupo recebe o conteúdo padrão do parâmetro.")
+        Return .F.
+    EndIf
+
+    // O parâmetro não pode ser grupo dele mesmo
+    If c_Grupo == c_CodAtual
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O item " + c_Item + " usa o próprio parâmetro " + c_ApelAtual + " como grupo." + CRLF + "Tipo: erro do usuário.", "Escolha outro parâmetro como grupo.")
+        Return .F.
+    EndIf
+
+    // Busca o grupo pelo código (apelido e situação)
+    ::o_Repo:DadosPorCodigo(c_Grupo, @c_ApelGrupo, @c_AtivoGrupo)
+
+    // O grupo precisa existir
+    If Empty(c_ApelGrupo)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O parâmetro grupo [" + c_Grupo + "] do item " + c_Item + " não existe." + CRLF + "Tipo: erro do usuário.", "Use a consulta (F3) para escolher um parâmetro existente.")
+        Return .F.
+    EndIf
+
+    // ... e estar ativo
+    If c_AtivoGrupo != ::o_Const:Ativo()
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O parâmetro " + c_ApelGrupo + " está inativo e não pode ser usado como grupo." + CRLF + "Tipo: erro do usuário.", "Ative o parâmetro " + c_ApelGrupo + " ou escolha outro grupo.")
+        Return .F.
+    EndIf
+
+    // Sem grupo dentro de grupo: o grupo escolhido não pode ter linhas de grupo
+    If ::o_Repo:ParametroTemGrupo(c_Grupo)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O parâmetro " + c_ApelGrupo + " não pode ser usado como grupo porque ele também tem linhas de grupo." + CRLF + "Tipo: erro do usuário.", "Não é permitido grupo dentro de grupo. Escolha um parâmetro que tenha só chaves de busca.")
+        Return .F.
+    EndIf
+
+    // ... e o parâmetro da tela não pode ter linhas de grupo se ele já é grupo de outro
+    c_Usado := ::o_Repo:ParametroUsadoComoGrupo(c_CodAtual)
+    If !Empty(c_Usado)
+        ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "O parâmetro " + c_ApelAtual + " não pode ter linhas de grupo porque ele é usado como grupo no parâmetro " + ::o_Repo:ApelidoPorCodigo(c_Usado) + "." + CRLF + "Tipo: erro do usuário.", "Não é permitido grupo dentro de grupo. Cadastre as chaves de busca diretamente neste parâmetro.")
+        Return .F.
+    EndIf
+Return .T.
+
+/*/{Protheus.doc} ChecaUsoComoGrupo
+    Bloqueia excluir ou inativar um parâmetro que é usado como grupo em outro parâmetro.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param c_Cod, Character, código do parâmetro (WFU_COD)
+    @param c_Param, Character, apelido do parâmetro (WFU_ALIAS)
+    @param c_Verbo, Character, ação bloqueada ("excluir" ou "inativar")
+    @return l_Ret, .T. se o parâmetro não é usado como grupo
+/*/
+Method ChecaUsoComoGrupo(c_Cod As Character, c_Param As Character, c_Verbo As Character) As Logical Class ParamCadService
+    Local c_Usado    := ::o_Repo:ParametroUsadoComoGrupo(c_Cod) // Parâmetro que usa este como grupo
+    Local c_ApelUsado := ""
+
+    // Ninguém usa como grupo: liberado
+    If Empty(c_Usado)
+        Return .T.
+    EndIf
+
+    c_ApelUsado := ::o_Repo:ApelidoPorCodigo(c_Usado)
+    ::o_Msg:ShowHelp(PARAMCADSERVICE_TITULO, "Não é possível " + c_Verbo + " o parâmetro " + AllTrim(c_Param) + "." + CRLF + "Motivo: ele é usado como grupo no parâmetro " + c_ApelUsado + "." + CRLF + "Tipo: erro do usuário.", "Remova a linha de grupo do parâmetro " + c_ApelUsado + " antes de " + c_Verbo + ".")
+Return .F.
+
+/*/{Protheus.doc} ApelidoDoParametro
+    Devolve o apelido (WFU_ALIAS) do parâmetro pelo código. Usado no gatilho do WFV_IDPAR
+    e na carga do campo virtual WFV_DESGRP. A busca fica no repositório.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.1
+    @param c_Codigo, Character, código do parâmetro (WFU_COD)
+    @return c_Apelido, apelido do parâmetro (vazio se não existir)
+/*/
+Method ApelidoDoParametro(c_Codigo As Character) As Character Class ParamCadService
+Return ::o_Repo:ApelidoPorCodigo(c_Codigo)
+
+/*/{Protheus.doc} CarregaApelidosGrupo
+    Ao abrir a tela, preenche o apelido do grupo (campo virtual WFV_DESGRP) nas linhas já
+    gravadas. LoadValue não marca a linha como alterada nem passa pelas validações.
+    @author Gabriel Lacerda Correia
+    @since 24/11/2026
+    @version 1.0
+    @param o_Model, Objeto, modelo de dados da rotina
+    @return l_Ret, sempre .T.
+/*/
+Method CarregaApelidosGrupo(o_Model As Object) As Logical Class ParamCadService
+    Local o_Grid  := o_Model:GetModel("WFVDETAIL") // Grid de itens (WFV)
+    Local n_Linha := 0
+
+    // Na inclusão ainda não existem linhas gravadas
+    If o_Model:GetOperation() == MODEL_OPERATION_INSERT
+        Return .T.
+    EndIf
+
+    // Percorre as linhas e preenche o apelido só nas linhas de grupo
+    For n_Linha := 1 To o_Grid:Length()
+        o_Grid:GoLine(n_Linha)
+        If !Empty(o_Grid:GetValue("WFV_IDPAR"))
+            o_Grid:LoadValue("WFV_DESGRP", ::ApelidoDoParametro(o_Grid:GetValue("WFV_IDPAR")))
+        EndIf
+    Next
+
+    o_Grid:GoLine(1) // Volta para a primeira linha
+Return .T.
+
+/*/{Protheus.doc} Grava
+    Commit do modelo + ConfirmSX8 na inclusão
+    @author Julio César
+    @since 18/11/2026
+    @version 1.0
+    @param o_Model, Objeto, modelo de dados da rotina
+    @return l_Ret, .T. se a gravação foi concluída
+/*/
+Method Grava(o_Model As Object) As Logical Class ParamCadService
+    Local l_Ret := FWFormCommit(o_Model) // Grava o modelo (cabeçalho e itens)
+
+    If l_Ret .And. o_Model:GetOperation() == MODEL_OPERATION_INSERT
+        // Na inclusão, confirma o número reservado pelo GetSXENum
+        ConfirmSX8()
+    EndIf
+Return l_Ret
+
+/*/{Protheus.doc} Cancela
+    Cancel do modelo + RollBackSX8 na inclusão
+    @author Julio César
+    @since 18/11/2026
+    @version 1.0
+    @param o_Model, Objeto, modelo de dados da rotina
+    @return l_Ret, .T. se o cancelamento foi concluído
+/*/
+Method Cancela(o_Model As Object) As Logical Class ParamCadService
+    Local l_Ret := FWFormCancel(o_Model) // Cancela o modelo
+
+    If l_Ret .And. o_Model:GetOperation() == MODEL_OPERATION_INSERT
+        // Na inclusão, devolve o número reservado pelo GetSXENum
+        RollBackSX8()
+    EndIf
+Return l_Ret
